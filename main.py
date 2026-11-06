@@ -1,187 +1,172 @@
+import flet as ft
 import math
 import os
-from kivy.app import App
-from kivy.uix.floatlayout import FloatLayout
-from kivy.uix.widget import Widget
-from kivy.uix.button import Button
-from kivy.uix.image import Image
-from kivy.core.window import Window
-from kivy.graphics import Rectangle, Color, Line, Ellipse, PushMatrix, PopMatrix, Rotate
+import base64
 
-# 强制全屏（手机端生效）
-Window.fullscreen = 'auto'
-# 如果在电脑测试，可以取消下面这行的注释
-# Window.size = (1000, 600)
+BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 
-class GameCanvas(Widget):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        
-        # 加载图片纹理
-        self.bg_texture = Image(source='233c.png').texture
-        self.car_texture = Image(source='car2.png').texture
-        
-        # 参数初始化
-        self.car_w = 180
-        self.car_h = 90
-        self.car_x = Window.width / 2
-        self.car_y = Window.height / 2
-        self.car_angle = 90.0  # 初始角度：90度朝上
-        self.handle_dist = 135 # 旋转手柄距离（车头前方）
-        
-        self.is_dragging = False
-        self.is_rotating = False
-        self.drag_offset_x = 0
-        self.drag_offset_y = 0
-        self.last_angle = 0.0
+# ================= 兼容新旧版本 Flet 的垫片 =================
+def get_border_all(width, color):
+    try: return ft.Border.all(width, color)
+    except AttributeError: return ft.border.all(width, color)
 
-        # 绑定窗口尺寸变化
-        Window.bind(on_resize=self.on_resize)
-        self.bind(pos=self.update_canvas, size=self.update_canvas)
+def get_padding_symmetric(h, v):
+    try: return ft.Padding.symmetric(horizontal=h, vertical=v)
+    except AttributeError: return ft.padding.symmetric(horizontal=h, vertical=v)
 
-    def on_resize(self, window, width, height):
-        # 限制车不要跑出屏幕
-        self.car_x = max(90, min(self.car_x, width - 90))
-        self.car_y = max(45, min(self.car_y, height - 45))
-        self.update_canvas()
+def get_alignment_center():
+    try: return ft.Alignment(0, 0)
+    except AttributeError: return ft.alignment.center
 
-    def update_canvas(self, *args):
-        self.canvas.clear()
-        with self.canvas:
-            # 1. 画背景
-            Rectangle(texture=self.bg_texture, pos=(0, 0), size=(Window.width, Window.height))
-            
-            # 2. 画车身
-            PushMatrix()
-            # Kivy 中，逆时针旋转为正。利用增量计算时，角度无需取反
-            Rotate(angle=self.car_angle, origin=(self.car_x, self.car_y))
-            Rectangle(
-                texture=self.car_texture,
-                pos=(self.car_x - self.car_w / 2, self.car_y - self.car_h / 2),
-                size=(self.car_w, self.car_h)
+def get_local_pos(e):
+    x = getattr(e, "local_x", None)
+    if x is not None: return x, getattr(e, "local_y", 0.0)
+    if hasattr(e, "local_position") and e.local_position is not None:
+        pos = e.local_position
+        return getattr(pos, "dx", getattr(pos, "x", 0.0)), getattr(pos, "dy", getattr(pos, "y", 0.0))
+    return 0.0, 0.0
+
+# 读取图片为 Base64 (绝对解决手机端不显示图片的问题)
+def get_img_src(filename):
+    path = os.path.join(BASE_PATH, filename)
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            return f"data:image/png;base64,{base64.b64encode(f.read()).decode('utf-8')}"
+    return filename
+# ============================================================
+
+def main(page: ft.Page):
+    page.title = "曲线行驶模拟"
+    page.padding = 0
+    page.spacing = 0
+
+    # 强制横屏
+    try:
+        page.window.orientation = ft.Orientation.LANDSCAPE
+    except:
+        pass
+
+    state = {
+        "car_x": 300.0, "car_y": 500.0, "angle_rad": math.pi / 2, 
+        "is_dragging": False, "is_rotating": False, 
+        "drag_offset_x": 0.0, "drag_offset_y": 0.0, "last_angle": 0.0
+    }
+    HANDLE_RADIUS, HANDLE_DISTANCE = 20, 90
+
+    # 加载图片
+    bg_img = ft.Image(src=get_img_src("233c.png"), fit="cover", width=2000, height=2000)
+    car_img = ft.Image(src=get_img_src("car2.png"), width=210, height=100, fit="contain")
+    
+    car_container = ft.Container(
+        content=car_img, width=210, height=100, 
+        rotate=ft.Rotate(angle=0), alignment=get_alignment_center()
+    )
+    handle_container = ft.Container(
+        width=HANDLE_RADIUS * 2, height=HANDLE_RADIUS * 2, 
+        bgcolor="#4CAF50", border=get_border_all(2, "#FFFFFF"), border_radius=HANDLE_RADIUS
+    )
+
+    # 安全退出逻辑
+    def close_dialog(dlg):
+        dlg.open = False
+        page.update()
+
+    def really_close(e):
+        page.overlay.clear()
+        page.controls.clear()
+        page.bgcolor = ft.Colors.BLACK
+        page.add(
+            ft.Container(
+                content=ft.Text("程序已安全退出", color="white", size=24, text_align="center"),
+                alignment=get_alignment_center(), expand=True
             )
-            PopMatrix()
-            
-            # 3. 计算手柄位置（车头正前方）
-            rad = math.radians(self.car_angle)
-            handle_x = self.car_x + math.cos(rad) * self.handle_dist
-            handle_y = self.car_y + math.sin(rad) * self.handle_dist
-            
-            # 4. 画连接线
-            Color(0, 1, 0, 1) # 绿色
-            Line(points=[self.car_x, self.car_y, handle_x, handle_y], width=2)
-            
-            # 5. 画旋转手柄（绿圈+白边）
-            Color(0, 1, 0, 1)
-            Ellipse(pos=(handle_x - 25, handle_y - 25), size=(50, 50))
-            Color(1, 1, 1, 1)
-            Line(circle=(handle_x, handle_y, 25), width=2)
-
-    def on_touch_down(self, touch):
-        rad = math.radians(self.car_angle)
-        handle_x = self.car_x + math.cos(rad) * self.handle_dist
-        handle_y = self.car_y + math.sin(rad) * self.handle_dist
-
-        # 1. 点到了手柄？ (范围加大到 50，更好点)
-        if math.hypot(touch.x - handle_x, touch.y - handle_y) <= 50: 
-            self.is_rotating = True
-            self.last_angle = math.atan2(touch.y - self.car_y, touch.x - self.car_x)
-            return True
-            
-        # 2. 点到了车身？
-        if math.hypot(touch.x - self.car_x, touch.y - self.car_y) < 110:
-            self.is_dragging = True
-            self.drag_offset_x = self.car_x - touch.x
-            self.drag_offset_y = self.car_y - touch.y
-            return True
-
-        return False
-
-    def on_touch_move(self, touch):
-        if self.is_dragging:
-            # 拖拽位置
-            self.car_x = touch.x + self.drag_offset_x
-            self.car_y = touch.y + self.drag_offset_y
-            
-            # 边界限制
-            self.car_x = max(90, min(self.car_x, Window.width - 90))
-            self.car_y = max(45, min(self.car_y, Window.height - 45))
-            
-            self.update_canvas()
-            return True
-
-        elif self.is_rotating:
-            # ★ 核心修复：增量角度计算，绝对不跳变，手感极度顺滑
-            current_angle = math.atan2(touch.y - self.car_y, touch.x - self.car_x)
-            delta = current_angle - self.last_angle
-            
-            # 处理跨越 -180 / 180 度的突变
-            if delta > math.pi: delta -= 2 * math.pi
-            elif delta < -math.pi: delta += 2 * math.pi
-            
-            # 将增量累加到车头角度上
-            self.car_angle += math.degrees(delta) 
-            self.last_angle = current_angle
-            
-            self.update_canvas()
-            return True
-
-        return False
-
-    def on_touch_up(self, touch):
-        self.is_dragging = False
-        self.is_rotating = False
-        return False
-
-
-class MainGame(FloatLayout):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        
-        # 1. 将画板放在底层
-        self.game_canvas = GameCanvas()
-        self.add_widget(self.game_canvas)
-        
-        # 2. 将退出按钮独立放在顶层，不会被画布遮挡
-        self.quit_btn = Button(
-            text="退 出", 
-            size_hint=(None, None), 
-            size=(120, 60),
-            pos_hint={'right': 0.95, 'top': 0.95}, # 固定在右上角
-            background_color=(0.95, 0.26, 0.21, 1), # 红色
-            font_size='20sp',
-            bold=True
         )
-        self.quit_btn.bind(on_release=self.quit_app)
-        self.add_widget(self.quit_btn)
+        page.update()
+        try: page.window.close()
+        except: pass
 
-    def quit_app(self, instance):
-        # ★ 终极退出：既发退出信号，又强行杀掉系统进程
-        App.get_running_app().stop()
-        os._exit(0)
+    def show_exit_dialog(e):
+        dlg = ft.AlertDialog(
+            title=ft.Text("确认退出"),
+            content=ft.Text("您确定要退出曲线行驶模拟吗？"),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: close_dialog(dlg)),
+                ft.TextButton("确定退出", on_click=really_close, style=ft.ButtonStyle(color=ft.Colors.RED)),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        page.overlay.append(dlg)
+        dlg.open = True
+        page.update()
 
-    # 拦截触摸事件，优先判断是否点到了按钮
-    def on_touch_down(self, touch):
-        if self.quit_btn.collide_point(*touch.pos):
-            return super().on_touch_down(touch)
-        
-        if self.game_canvas.on_touch_down(touch):
-            return True
-        return super().on_touch_down(touch)
+    quit_btn = ft.Container(
+        content=ft.Text("退出", color="#FFFFFF", weight="bold", size=16),
+        bgcolor="#F44336", padding=get_padding_symmetric(20, 10),
+        border_radius=8, top=30, right=30, on_click=show_exit_dialog
+    )
 
-    def on_touch_move(self, touch):
-        if self.game_canvas.on_touch_move(touch):
-            return True
-        return super().on_touch_move(touch)
+    def update_ui():
+        cx, cy, rad = state["car_x"], state["car_y"], state["angle_rad"]
+        car_container.left, car_container.top = cx - 105, cy - 50
+        car_container.rotate.angle = -math.degrees(rad)
+        handle_x = cx + math.cos(rad) * HANDLE_DISTANCE
+        handle_y = cy - math.sin(rad) * HANDLE_DISTANCE
+        handle_container.left, handle_container.top = handle_x - HANDLE_RADIUS, handle_y - HANDLE_RADIUS
+        page.update()
 
-    def on_touch_up(self, touch):
-        self.game_canvas.on_touch_up(touch)
-        return super().on_touch_up(touch)
+    def on_resize(e=None):
+        if state["car_x"] == 300.0 and state["car_y"] == 500.0:
+            state["car_x"] = page.width / 2 if page.width else 400
+            state["car_y"] = page.height / 2 if page.height else 600
+            update_ui()
 
+    page.on_resize = on_resize
 
-class MyApp(App):
-    def build(self):
-        return MainGame()
+    def on_pan_start(e: ft.DragStartEvent):
+        fx, fy = get_local_pos(e)
+        cx, cy = state["car_x"], state["car_y"]
+        handle_x = cx + math.cos(state["angle_rad"]) * HANDLE_DISTANCE
+        handle_y = cy - math.sin(state["angle_rad"]) * HANDLE_DISTANCE
 
-if __name__ == '__main__':
-    MyApp().run()
+        if math.hypot(fx - handle_x, fy - handle_y) <= HANDLE_RADIUS + 20:
+            state["is_rotating"] = True
+            state["last_angle"] = math.atan2(cy - fy, fx - cx)
+            return
+        if math.hypot(fx - cx, fy - cy) < 100:
+            state["is_dragging"] = True
+            state["drag_offset_x"] = cx - fx
+            state["drag_offset_y"] = cy - fy
+
+    def on_pan_update(e: ft.DragUpdateEvent):
+        fx, fy = get_local_pos(e)
+        cx, cy = state["car_x"], state["car_y"]
+
+        if state["is_dragging"]:
+            state["car_x"] = fx + state["drag_offset_x"]
+            state["car_y"] = fy + state["drag_offset_y"]
+            update_ui()
+        elif state["is_rotating"]:
+            current_angle = math.atan2(cy - fy, fx - cx)
+            delta_angle = current_angle - state["last_angle"]
+            if delta_angle > math.pi: delta_angle -= 2 * math.pi
+            elif delta_angle < -math.pi: delta_angle += 2 * math.pi
+            state["angle_rad"] += delta_angle * 0.1  # 灵敏度调节
+            state["last_angle"] = current_angle
+            update_ui()
+
+    def on_pan_end(e: ft.DragEndEvent):
+        state["is_dragging"], state["is_rotating"] = False, False
+
+    gesture_layer = ft.GestureDetector(
+        on_pan_start=on_pan_start, on_pan_update=on_pan_update, on_pan_end=on_pan_end,
+        content=ft.Container(bgcolor="transparent", expand=True), drag_interval=10,
+    )
+
+    page.add(
+        ft.Stack(controls=[ft.Container(content=bg_img, expand=True), car_container, handle_container, gesture_layer, quit_btn], expand=True)
+    )
+    on_resize()
+
+if __name__ == "__main__":
+    try: ft.run(main)
+    except AttributeError: ft.app(target=main)
