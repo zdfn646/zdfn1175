@@ -1,0 +1,9 @@
+[project]
+name = "quxian"
+version = "1.0.0"
+requires-python = ">=3.10"
+
+[tool.flet]
+project = "."
+org = "com.mycompany"
+product = "曲线行驶"
