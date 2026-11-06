@@ -3,6 +3,16 @@ import math
 import os
 import base64
 import time
+import sys
+
+# ================= 尝试引入安卓原生 API =================
+try:
+    from android import PythonActivity
+    from android.runnable import run_on_ui_thread
+    HAS_ANDROID = True
+except ImportError:
+    HAS_ANDROID = False
+# =========================================================
 
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 
@@ -40,11 +50,23 @@ def main(page: ft.Page):
     page.padding = 0
     page.spacing = 0
 
+    # 1. 尝试 Flet 自带横屏
     try:
         page.window.orientation = ft.Orientation.LANDSCAPE
         page.window.full_screen = True
     except:
         pass
+
+    # 2. 使用安卓底层强制横屏 (最有效)
+    if HAS_ANDROID:
+        try:
+            @run_on_ui_thread
+            def force_landscape():
+                # SCREEN_ORIENTATION_LANDSCAPE = 0
+                PythonActivity.mActivity.setRequestedOrientation(0) 
+            force_landscape()
+        except:
+            pass
 
     state = {
         "car_x": 300.0, "car_y": 500.0, "angle_rad": math.pi / 2, 
@@ -52,13 +74,11 @@ def main(page: ft.Page):
         "drag_offset_x": 0.0, "drag_offset_y": 0.0, "last_angle": 0.0
     }
     
-    # 车辆尺寸放大 1.5 倍
     CAR_W = 315
     CAR_H = 150
     HANDLE_RADIUS = 20
     HANDLE_DISTANCE = 135 
 
-    # 加载图片（Base64防丢失）
     bg_img = ft.Image(src=get_img_src("233c.png"), fit="cover", width=2000, height=2000)
     car_img = ft.Image(src=get_img_src("car2.png"), width=CAR_W, height=CAR_H, fit="contain")
     
@@ -71,38 +91,37 @@ def main(page: ft.Page):
         bgcolor="#4CAF50", border=get_border_all(2, "#FFFFFF"), border_radius=HANDLE_RADIUS
     )
 
-    # ================= 退出逻辑（防白屏、防转圈） =================
+    # ================= 退出逻辑（调用底层强杀） =================
     def hide_exit_ui(e):
         exit_overlay.visible = False
         page.update()
 
     def really_close(e):
-        # 1. 清理所有弹窗和内容
-        page.overlay.clear()
-        page.controls.clear()
-        
-        # 2. 电脑端尝试直接关窗口
-        if "android" not in str(page.platform).lower() and "ios" not in str(page.platform).lower():
-            try: 
-                page.window.destroy()
-                return
-            except: 
-                try: 
-                    page.window.close()
-                    return
-                except: 
-                    pass
-        
-        # 3. 如果电脑端关窗口失败，或者是在手机端，统一显示黑底白字
-        page.bgcolor = ft.Colors.BLACK
-        page.add(
-            ft.Container(
-                content=ft.Text("程序已安全退出\n请按返回键或上划关闭", color="white", size=24, text_align="center"), 
-                alignment=get_alignment_center(), 
-                expand=True
-            )
-        )
+        # 关闭遮罩
+        exit_overlay.visible = False
         page.update()
+
+        # 如果在手机上，直接调用底层 finish()，直接退回桌面
+        if HAS_ANDROID:
+            try:
+                @run_on_ui_thread
+                def close_android():
+                    PythonActivity.mActivity.finish()
+                    os._exit(0)
+                close_android()
+                return
+            except:
+                pass
+        
+        # 如果在电脑上
+        try:
+            page.window.destroy()
+        except:
+            try:
+                page.window.close()
+            except:
+                pass
+        os._exit(0)
 
     def show_exit_ui(e):
         exit_overlay.visible = True
@@ -128,9 +147,8 @@ def main(page: ft.Page):
         bgcolor="#F44336", padding=get_padding_symmetric(20, 10),
         border_radius=8, top=30, right=30, on_click=show_exit_ui
     )
-    # ==============================================================
 
-    # ★ 防抖机制：限制最高刷新频率（约 30 FPS），防止快速拖动时 UI 线程崩溃导致图片消失和事件丢失
+    # ★ 防抖机制（防闪烁）
     last_update_time = [0.0]
     def update_ui(force=False):
         now = time.time()
@@ -162,7 +180,6 @@ def main(page: ft.Page):
         handle_x = cx + math.cos(state["angle_rad"]) * HANDLE_DISTANCE
         handle_y = cy - math.sin(state["angle_rad"]) * HANDLE_DISTANCE
 
-        # 判定范围放大，手感更好
         if math.hypot(fx - handle_x, fy - handle_y) <= HANDLE_RADIUS + 30:
             state["is_rotating"] = True
             state["last_angle"] = math.atan2(cy - fy, fx - cx)
@@ -188,14 +205,13 @@ def main(page: ft.Page):
             if delta_angle > math.pi: delta_angle -= 2 * math.pi
             elif delta_angle < -math.pi: delta_angle += 2 * math.pi
             
-            # 灵敏度 * 0.1
             state["angle_rad"] += delta_angle * 0.1
             state["last_angle"] = current_angle
             update_ui()
 
     def on_pan_end(e: ft.DragEndEvent):
         state["is_dragging"], state["is_rotating"] = False, False
-        update_ui(force=True) # 松手时强制刷新一次，确保位置完全对齐
+        update_ui(force=True) 
 
     gesture_layer = ft.GestureDetector(
         on_pan_start=on_pan_start, on_pan_update=on_pan_update, on_pan_end=on_pan_end,
